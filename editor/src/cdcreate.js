@@ -1,0 +1,737 @@
+    // ---------- the CellDesigner palette (editor/src/cdcreate.js) ----------
+    // The CellDesigner palette, writing the CellDesigner file directly: on a CellDesigner map with Settings, Editing on Full, the Edit
+    // window's palette offers CellDesigner's own set, SBGN-suited only: species, logic gates, reactions,
+    // modifiers and, with the Reduced notation tick box, CellDesigner's reduced notation. The gestures are the SBGN
+    // palette's (create.js): a click takes a sign once, a double click keeps it in hand, a sign dragged onto the map is put
+    // where it is dropped; a drag from a node with a line's sign picked draws that line;
+    // a gate takes three clicks (its inputs, then the reaction's square or the target entity; a NOT or unknown gate one
+    // input), placed where CellDesigner puts it (cd_make.gate). Every change is written into the CellDesigner file by
+    // cd_make (renderers/converter/cd_make.js, tests/cd-make.js), the editor's GraphML made again from it by cd_edit, so
+    // the saved file opens in CellDesigner 4.4 as it was left; one undo step each (core.js keeps the file in the step).
+    // the kinds are cd_make's (LOOK, PROCESS, MODS, REDUCED, NEED) and the gate signs cdrender's GATE, written here as
+    // well because the palette is drawn before those files load; cdCheck() compares them once they have
+    // each sign drawn as CellDesigner's own toolbar draws it, in the palette's weights (atlas-app.html, Sign weights); a
+    // species' shape in the proportions CellDesigner gives it on the map where those cannot change (RNA's slant at 45 degrees)
+    var CD_SP = [['PROTEIN', 'Protein', '<rect x="1.5" y="5" width="21" height="14" rx="3.5"/>'],
+      ['GENE', 'Gene', '<rect x="1.5" y="6" width="21" height="12"/>'],
+      ['RNA', 'RNA', '<path d="M11.5 7h11l-10 10h-11z"/>'],
+      ['SIMPLE_MOLECULE', 'Simple molecule', '<circle cx="12" cy="12" r="7"/>'],
+      ['UNKNOWN', 'Unknown', '<ellipse cx="12" cy="12" rx="10.5" ry="6" fill="currentColor" fill-opacity=".35" stroke="none"/>'],
+      ['PHENOTYPE', 'Phenotype', '<path d="M6 5h12l4.5 7-4.5 7h-12l-4.5-7z"/>'],
+      ['DEGRADED', 'Degraded', '<circle cx="12" cy="12" r="8"/><path d="M4 20l16-16"/>'],
+      // the complex: its box with cut corners holding three overlapping members, each opaque over the one behind it
+      ['COMPLEX', 'Complex', '<path d="M6 2.5h12l3.5 3.5v12l-3.5 3.5h-12l-3.5-3.5v-12z"/><g class="thin" fill="#fff"><rect x="8.5" y="5.5" width="7.5" height="6.5" rx="1"/><rect x="5" y="10" width="6.5" height="4.5" rx="1"/><ellipse cx="14.3" cy="14.8" rx="4.6" ry="3.6"/></g>'],
+      ['COMPARTMENT', 'Compartment', '<rect x="1.5" y="3.5" width="21" height="17" rx="6"/><rect class="thin" x="4.5" y="6.5" width="15" height="11" rx="3.5"/>'],
+      // CellDesigner's oval compartment (class OVAL), its two lines as the square one's
+      ['OVAL', 'Oval compartment', '<ellipse cx="12" cy="12" rx="10.5" ry="8.5"/><ellipse class="thin" cx="12" cy="12" rx="7.5" ry="5.5"/>']];
+    function cdComp(cls) { return cls === 'COMPARTMENT' || cls === 'OVAL'; }   // the two compartment kinds of the palette
+    // gates: the circle with its sign, two input lines above and the output line below; the signs centred in the circle
+    // (the bar and ! drawn, not letters, so they sit in its middle); the fourth item is cdrender's GATE sign, for cdCheck
+    var CD_Q = '<path d="M9.8 10.2a2.2 2.2 0 1 1 3.2 2c-.7.4-1 .8-1 1.6" class="in"/><circle class="dot" cx="12" cy="16.4" r=".8"/>';
+    var CD_GATES = [['AND', 'AND gate', '<text x="12" y="16.2" text-anchor="middle" font-size="9">&amp;</text>', '&amp;'], ['OR', 'OR gate', '<path d="M12 9.5v7" class="in"/>', '|'],
+      ['NOT', 'NOT gate', '<path d="M12 9.6v4.6" class="in"/><circle class="dot" cx="12" cy="16.6" r=".8"/>', '!'], ['UNKNOWN', 'Unknown gate', '<g transform="translate(0 .7)">' + CD_Q + '</g>', '?']].map(function (q) {
+      return [q[0], q[1], '<circle cx="12" cy="13" r="6.5"/><path d="M3 4l4.4 4.4M21 4l-4.4 4.4M12 19.5V23"/>' + q[2], q[3]];
+    });
+    // a reaction: the bare arrow with CellDesigner's filled head, the omitted one crossed by two slashes, the unknown one by ?
+    var CD_LINE = '<path d="M1.5 12h15"/>', CD_HEAD = '<path d="M16 8.5l6.5 3.5-6.5 3.5z" fill="currentColor"/>';
+    var CD_RX = [['STATE_TRANSITION', 'State transition', CD_LINE + CD_HEAD],
+      ['KNOWN_TRANSITION_OMITTED', 'Known transition omitted', CD_LINE + '<path d="M6.5 16l2.5-8M10 16l2.5-8" class="in"/>' + CD_HEAD],
+      ['UNKNOWN_TRANSITION', 'Unknown transition', CD_LINE + '<g transform="translate(-2.5 -1.5)">' + CD_Q + '</g>' + CD_HEAD]];
+    // a line joined to a reaction that is already there, as CellDesigner's Add Reactant and Add Product: its main line
+    // dotted, the added line meeting it (no arrowhead) or leaving it (with the reaction's arrowhead)
+    var CD_DOTS = '<path d="M1.5 18h21" class="in" stroke-dasharray="1.4 3.5"/>';   // 5 dashes, both ends a dash, the join (x 11) on one; gaps wide for the round ends (+.65 each) so it reads dashed at 21 px
+    var CD_ADD = [['ADD_REACTANT', 'Add reactant (from a species onto a reaction; onto a logic gate, a new input)', CD_DOTS + '<path d="M3.5 4.5L11 18"/>'],
+      ['ADD_PRODUCT', 'Add product (from a reaction to a species)', CD_DOTS + '<path d="M11 18l6-9"/><path d="M20.5 4l-.6 6.6-5.2-3.4z" fill="currentColor"/>']];
+    // a modifier points down onto a reaction, as in CellDesigner's toolbar. The same signs draw reduced notation: with the
+    // Reduced notation tick box ticked, a modifier's sign dragged from species to species makes CellDesigner's reduced
+    // notation type for it (CD_RED), written as such in the file; catalysis has none in CellDesigner
+    var CD_MOD = [['CATALYSIS', 'Catalysis', '<path d="M12 1.5v14"/><circle cx="12" cy="18.5" r="3"/>'],
+      ['INHIBITION', 'Inhibition', '<path d="M12 1.5v19M7 20.5h10"/>'],
+      ['PHYSICAL_STIMULATION', 'Physical stimulation', '<path d="M12 1.5v12.5M7.5 14h9l-4.5 7.5z"/>'],
+      ['MODULATION', 'Modulation', '<path d="M12 1.5v11M12 12.5l3.5 4.5-3.5 4.5-3.5-4.5z"/>'],
+      ['TRIGGER', 'Trigger', '<path d="M12 1.5v13.5M7 11.5h10M7.5 15h9l-4.5 7z"/>']].map(function (q) {
+      return [q[0], q[1] + (q[0] === 'CATALYSIS' ? ' (onto a reaction)' : ' (onto a reaction, or between species with Reduced notation ticked)'), q[2]];
+    });
+    // reduced notation's types, each named as the modifier whose sign draws it (no positive influence: CellDesigner's open
+    // arrowhead is not SBGN's, the file's taken in as the open triangle, cd_make sbgn)
+    var CD_RED = [['NEGATIVE_INFLUENCE', 'INHIBITION'], ['REDUCED_PHYSICAL_STIMULATION', 'PHYSICAL_STIMULATION'], ['REDUCED_MODULATION', 'MODULATION'], ['REDUCED_TRIGGER', 'TRIGGER']];
+    var RED_OF = {}; CD_RED.forEach(function (q) { RED_OF[q[1]] = q[0]; });   // a modifier's type -> its reduced notation type
+    var CD_NAME = {};   // CellDesigner's names, for the menus and the status line (a gate's by G_ and its kind: UNKNOWN is a species too)
+    CD_SP.concat(CD_RX, CD_ADD, CD_MOD).forEach(function (q) { CD_NAME[q[0]] = q[1].replace(/ \(.*\)$/, ''); });
+    CD_RED.forEach(function (q) { CD_NAME[q[0]] = CD_NAME[q[1]]; });
+    CD_GATES.forEach(function (q) { CD_NAME['G_' + q[0]] = q[1]; });
+    var cdK = function (q) { return ['cd:' + q[0], q[1], q[2]]; };   // the tool kinds, apart from the SBGN palette's
+    function palCd() {   // the set: nodes, the gates, the lines last (as the SBGN palette); three blocks in the one list: species, gates, lines
+      return [['Species', CD_SP.map(cdK)], ['Logic gates', CD_GATES.map(function (q) { return ['cd:G_' + q[0], q[1], q[2]]; }), true], ['Reactions', CD_RX.concat(CD_ADD).map(cdK), true], ['Modifiers', CD_MOD.map(cdK)]];
+    }
+    CD_RX.concat(CD_ADD, CD_MOD).forEach(function (q) { ARCS['cd:' + q[0]] = 1; });   // the signs that draw a line (arcTool)
+    var CD_GATE = {}; CD_GATES.forEach(function (q) { CD_GATE['cd:G_' + q[0]] = q[0]; });   // tool kind -> gate kind
+    function cdKind(k) { return k && k.indexOf('cd:') === 0 ? k.slice(3) : null; }
+
+    // the palette shown on a CellDesigner map (palShow, create.js)
+    function cdPal() { return on && V.current === map && !!cd && !!cdJs && !!cdMk && V.level === 'full'; }
+    var cdStrictMemo = [null, false];   // read from this browser once per map, not on every paint
+    function cdStrict() {   // the Reduced notation tick box, per map as on SBGN-ML maps (unticked: no reduced notation)
+      var id = palId();
+      if (cdStrictMemo[0] !== id) { var k = palStore()[id]; cdStrictMemo = [id, !!(k && k.strict === true)]; }
+      return cdStrictMemo[1];
+    }
+    function cdFill() {
+      ['.m2-ed-pnot', '.m2-ed-plook', '.m2-ed-pprot'].forEach(function (c) { pal.querySelector(c).hidden = true; });   // no PD and AF on a CellDesigner map
+      pal.querySelector('.m2-ed-pnot').style.display = 'none';   // a row: its display wins over hidden
+      var hy = pal.querySelector('.m2-ed-pstrict'), hyc = hy.querySelector('input'), strict = cdStrict();
+      hy.hidden = false;
+      if (hyc.checked !== !strict) hyc.checked = !strict;
+      cdInfo(hy, true);
+      styleRow(); cdColsRow();
+      var k = 'cd' + (strict ? 'S' : '') + (palGrouped() ? 'G' : '');
+      if (palShown === k) return;
+      palShown = k;
+      palSignsEl.innerHTML = palSigns(palCd()); palBlocks();
+    }
+    // the tick box's title and circled i on a CellDesigner map say what it does there (the SBGN text speaks of
+    // hybrid maps and SBGN-ML files); palFill puts the SBGN ones back
+    var CD_INFO = 'Lets the modifiers\u2019 signs (inhibition, physical stimulation, modulation, trigger) join two species directly, written as CellDesigner\u2019s reduced notation, and allows a logic gate between species. Unticked: reactions and their modifiers only. CellDesigner\u2019s positive influence (an open arrowhead, not an SBGN sign) is made a physical stimulation when a map is opened.';
+    function cdInfo(hy, on_) {
+      var lab = hy.querySelector('label'), ti = hy.querySelector('.m2-ed-ptip'), tx = hy.querySelector('.m2-ed-ptext');
+      if (!lab.dataset.sbgn) { lab.dataset.sbgn = lab.title; tx.dataset.sbgn = tx.textContent; }
+      var v = on_ ? CD_INFO : tx.dataset.sbgn;
+      if (tx.textContent !== v) { lab.title = on_ ? 'Ticked (the default): the reduced notation signs shown' : lab.dataset.sbgn; ti.title = v; tx.textContent = v; }
+    }
+    function cdCheck() {   // the palette's kinds against cd_make's and cdrender's, once loaded: a drift said in the console
+      var g = window.cdrender && window.cdrender.GATE, miss = CD_SP.filter(function (q) { return !cdComp(q[0]) && !cdMk.LOOK[q[0]]; }).map(function (q) { return q[0]; })
+        .concat(CD_RX.filter(function (q) { return cdMk.PROCESS.indexOf(q[0]) < 0; }).map(function (q) { return q[0]; }), CD_MOD.filter(function (q) { return cdMk.MODS.indexOf(q[0]) < 0; }).map(function (q) { return q[0]; }),
+          CD_RED.filter(function (q) { return cdMk.REDUCED.indexOf(q[0]) < 0; }).map(function (q) { return q[0]; }), CD_GATES.filter(function (q) { return !cdMk.NEED[q[0]]; }).map(function (q) { return q[0]; }));
+      if (miss.length) console.error('The CellDesigner palette offers kinds cd_make lacks: ' + miss.join(', '));
+      if (g) CD_GATES.forEach(function (q) { var v = g[q[0]]; if (v && q[3] !== v) console.error('The palette\u2019s ' + q[1] + ' sign differs from cdrender\u2019s ' + v); });
+    }
+    pal.querySelector('.m2-ed-pstrict input').addEventListener('change', function (e) {   // on a CellDesigner map: kept per map, modifiers' signs between species allowed or not
+      if (!cdPal()) return;
+      var all = palStore(), id = palId();
+      cdStrictMemo = [id, !e.target.checked];
+      if (id) { all[id] = { lang: 'pd', look: 'rn', strict: !e.target.checked }; try { localStorage.setItem(PAL_KEY, JSON.stringify(all)); } catch (er) {} }
+      palShown = null; palShow();
+    });
+
+    // a change made by the palette: the new CellDesigner text the file, the editor's GraphML made again from it, one undo
+    // step; sel the node ids, selLines the line ids (a reaction's id: its main line) selected after it, either a function
+    // giving them once fn has run
+    function cdApply(fn, sel, selLines) {
+      keyFlush();   // a run of arrow keys settled first (else a nudge then Delete within 150 ms loses the nudge)
+      var N = cdNow(), now = N.t;   // a move not drawn yet is in the file too
+      var t2;
+      try { t2 = fn(now, N.sh); } catch (err) { if (!(err && err.refused)) warn(String(err && err.message || err).replace(/\.?$/, '.')); return false; }   // a rule of the format (cd_make's refuse): nothing said; a fault in red
+      if (t2 && t2.text != null) t2 = t2.text;
+      if (!t2 || t2 === now) return false;
+      remember(false);
+      cdRebuild(t2, N.sh); parse();
+      selN = []; selP = []; selE = []; part = null;
+      if (typeof sel === 'function') sel = sel();
+      if (typeof selLines === 'function') selLines = selLines();
+      (sel || []).forEach(function (id) { nodes2.forEach(function (n, i) { if (n.id === id) selN.push(i); }); });
+      (selLines || []).forEach(function (id) { edges2.forEach(function (q, k) { if (q.id === id || q.id === id + '|a' || q.id === id + '|b') selE.push(k); }); });
+      dirty = true; quiet(); render(); paint(); changed();
+      return true;
+    }
+    // what a node is on a CellDesigner map: 'epn' a species (not a complex's member), 'proc' a reaction's square, 'gate' a
+    // gate, null a compartment or a member
+    function cdRole(i) {
+      var n = nodes2[i];
+      if (/\|proc$/.test(n.id)) return 'proc';
+      if (/\|g\d*$/.test(n.id)) return 'gate';
+      if (n.comp || (n.up != null && !nodes2[n.up].comp)) return null;
+      return 'epn';
+    }
+    function cdRid(i) { return nodes2[i].id.replace(/\|(proc|g\d*)$/, ''); }
+    function cdGateRef(i) { var m = nodes2[i].id.match(/^(.*)\|g(\d*)$/); return m[2] ? m[1] + '|m' + m[2] : m[1]; }   // cd_make's name of a gate
+    function cdComplexAt(P) { var i = innermost(P, function (n) { return n.shape.kind === 'Complex'; }); return i >= 0 ? nodes2[i].id : null; }   // the innermost complex under P, its alias
+
+    // a species or compartment placed: centred where clicked or dropped (on the grid with Snap), at CellDesigner's own size
+    // the colours of new species and compartments (Colours under the palette, palDrop in create.js, kept in this browser
+    // for every CellDesigner map): the file's (the colour most species of the class, or most compartments, already have on
+    // the map; the Default one for a class the map has none of; the choice when none is kept), CellDesigner's own (cd_make
+    // LOOK and COMP), the viewer's Default scheme (Settings, Map colours) by the class's role, or none (white, as
+    // CellDesigner has no unfilled species), or Confetti (a pastel of its own, create.js confettiFill)
+    var CD_COL_KEY = 'atlas-edit-cd-colours', CD_COLS = [['file', 'From file', 'New species and compartments in the colour most of their class have on this map, Default for a class it has none of'], ['cd', 'CellDesigner', 'New species and compartments in CellDesigner\u2019s own colours'], ['default', 'Default', 'New species and compartments in the viewer\u2019s Default colours'], ['none', 'No colours', 'New species and compartments white'], ['custom', 'Custom', 'New species in the colours kept by Set as default; From file for a class with none'], ['confetti', 'Confetti', 'Every new species a pastel of its own, far from the colours already on the map; compartments as From file']];
+    // the Default compartment's paint, the official maps': cdrender draws a compartment's band at a quarter of its colour,
+    // so this shows as the Default scheme's compartment (#F7F6F3, sbgn_edit FILL; tests/cd-colours-default.js checks the two agree)
+    var CD_COMP_DEFAULT = 'ffdfdbce';
+    function cdCols() { return keptChoice(CD_COL_KEY, ['file', 'cd', 'default', 'none', 'custom', 'confetti']); }
+    function cdColour(t, cls) { return cdColourIn(cdCols(), t, cls); }   // eight hex digits for cd_make, or null for CellDesigner's own
+    function cdColourIn(m, t, cls) {
+      var comp = cdComp(cls);
+      if (m === 'none') return 'ffffffff';
+      if (m === 'confetti') { if (cls !== 'DEGRADED' && !comp) return 'ff' + confettiFill(t).slice(1); m = 'file'; }   // create.js (no file yet: the first hue); a degraded species or a compartment as From file
+      if (m === 'custom') { var k = !comp && cdKept()[cls]; if (k && k.fill) return 'ff' + k.fill.slice(1).toLowerCase(); m = 'file'; }   // a class with none kept: From file
+      if (m === 'file') { var f = t ? (comp ? cdMk.compartmentColour(t) : cdMk.classColour(t, cls)) : null; if (f) return f; m = 'default'; }   // none of that class on the map (or no file yet): Default
+      if (m === 'cd') return comp ? cdMk.COMP.colour : null;
+      if (comp) return CD_COMP_DEFAULT;
+      var c = V.schemeFill && window.cdrender ? V.schemeFill('default', window.cdrender.ROLE[cls] || 'white') : null;
+      return c ? 'ff' + c.toLowerCase() : null;
+    }
+    // the squares of a choice in its list (the field shows its name only: bright colours there would draw the eye from the
+    // map), five at most, the first at the right (row-reverse). CellDesigner and Default, fixed sets: the protein's, simple
+    // molecule's, phenotype's, gene's and RNA's colours, each once; No colours one white. From file: the five colours most
+    // species on the map have, the most used first, from the map as it is now (classColours keeps its last answer)
+    var CD_SQ = [['PROTEIN', 'protein'], ['SIMPLE_MOLECULE', 'simple molecule'], ['PHENOTYPE', 'phenotype'], ['GENE', 'gene'], ['RNA', 'RNA']];
+    function cdSquares(mode) {
+      var sq = function (x, t) { return '<i style="background:#' + x.slice(2) + '" title="' + t + '"></i>'; }, h;
+      if (mode === 'confetti') return confettiSquares();
+      if (mode === 'none') h = sq('ffffffff', 'every species, #FFFFFF');
+      else if (mode !== 'file') {   // Custom: the classes' colours as new ones get them (kept, else the map's, else Default's)
+        var seen = {};
+        h = CD_SQ.map(function (q) {
+          var x = (mode === 'cd' ? null : cdColourIn(mode, mode === 'custom' && cd ? cd.now : null, q[0])) || cdMk.LOOK[q[0]][2];
+          if (seen[x]) { seen[x].push(q[1]); return null; }
+          seen[x] = [q[1]]; return x;
+        }).filter(Boolean).map(function (x) { return sq(x, seen[x].join(', ') + ', #' + x.slice(2).toUpperCase()); }).join('');
+      } else {
+        var n = cd && cd.now ? cdMk.classColours(cd.now) : {}, w = {}, order = [];
+        Object.keys(n).forEach(function (cls) { Object.keys(n[cls]).forEach(function (col) { if (!(col in w)) { w[col] = 0; order.push(col); } w[col] += n[cls][col]; }); });
+        h = order.slice().sort(function (a, b) { return w[b] - w[a] || order.indexOf(a) - order.indexOf(b); }).slice(0, 5).map(function (x) { return sq(x, '#' + x.slice(2).toUpperCase() + ', ' + w[x] + ' species'); }).join('');
+      }
+      return '<span class="m2-cs-sw">' + h + '</span>';
+    }
+    function cdColsRow() { return palDrop({ key: 'cols', label: 'Colours', title: 'Colours of new species and compartments', list: CD_COLS, get: cdCols, set: function (v) { keepChoice(CD_COL_KEY, v, 'file'); }, sq: cdSquares }); }
+    // Style: From file, the size most species of that class have on the map; Custom, the size kept by Set as default (From
+    // file for a class with none); else, or none there, CellDesigner's
+    function cdSize(cls) {
+      if (cdComp(cls)) return cdMk.COMP.size.slice();
+      var st = palStyle(), k = st === 'custom' ? cdKept()[cls] : null;
+      if (k && k.w > 0 && k.h > 0) return [k.w, k.h];   // a multimer's whole box, its copies included (cdCopies)
+      return (st !== 'default' && cls !== 'COMPLEX' && cd && cdMk.classSize(cd.now, cls)) || cdMk.LOOK[cls].slice(0, 2);
+    }
+    // Set as default on a CellDesigner map (PF_CD.def, the button in create.js): the species' size, fill, border width and
+    // multimer kept by its class in this browser for every CellDesigner map (atlas-edit-cd-defaults, apart from SBGN-ML's
+    // kinds), and Style and Colours switched to Custom: Style Custom takes the size and multimer, Colours Custom the fill
+    // and border width, as on SBGN-ML maps
+    var CD_DEF_KEY = 'atlas-edit-cd-defaults';
+    function cdKept() { return looksKept(CD_DEF_KEY); }
+    function cdDef(i) {
+      var id = nodes2[i].id, L, n, all = cdKept();
+      try { L = cdMk.look(cd.now, id); n = cdMk.aliasInfo(cd.now, id).homodimer || 1; } catch (e) { return; }   // the file behind the map read (an undo not drawn yet)
+      var b = boxOf(i);
+      all[L.cls] = { w: b[2], h: b[3], width: L.width, multimer: n > 1, copies: n };
+      if (L.fill && L.cls !== 'DEGRADED') all[L.cls].fill = L.fill;   // a degraded species keeps CellDesigner's look
+      if (!keepLook(CD_DEF_KEY, all)) return;
+      keepChoice(STYLE_KEY, 'custom', 'file'); keepChoice(CD_COL_KEY, 'custom', 'file'); styleRow(); cdColsRow();
+    }
+    // the copies of a new species of that class: the multimer kept, under Style Custom; its box (cdSize) holds them all, the
+    // front one 6 smaller for each copy behind it (cdrender frontBox; cd_make.homodimer grows the box back)
+    function cdCopies(cls) { var k = palStyle() === 'custom' && cls !== 'DEGRADED' ? cdKept()[cls] : null; return k && k.multimer && k.w > 0 ? Math.max(2, k.copies || 2) : 1; }
+    function cdKeptLook(t, alias, cls) {   // a new species given the border width and multimer kept for its class, under Custom
+      var k = cdKept()[cls], n = cdCopies(cls);
+      if (!k || cls === 'DEGRADED') return t;
+      if (cdCols() === 'custom' && k.width > 0 && k.width !== 1) t = cdMk.restyle(t, alias, { width: k.width });
+      if (n > 1) t = cdMk.homodimer(t, alias, n);
+      return t;
+    }
+    function cdMake(P, kind) {
+      var cls = cdKind(kind);
+      if (!cls || CD_GATE[kind]) return;
+      // in the file's places, those of the drawing cdApply hands over (the editor's plus that drawing's shift, sh: out of
+      // negative places or the canvas fit), snapped there, as the file's nodes are on its grid; placed where it is dropped,
+      // also past the canvas's edge: drawing it shifts the map (cd_edit.place) and the frame follows, as after a move, so
+      // nothing moves on screen
+      var s = cdSize(cls), e = cdComp(cls) ? 0 : 6 * (cdCopies(cls) - 1);
+      var boxAt = function (sh) {   // centred and snapped by the whole box, a multimer's copies included
+        var X = P[0] + sh[0] - s[0] / 2, Y2 = P[1] + sh[1] - s[1] / 2;
+        if (gridSet.snap) { X += toGrid(X + s[0] / 2, gridSet.step); Y2 += toGrid(Y2 + s[1] / 2, gridSet.step); }
+        return [+fmt(X), +fmt(Y2), s[0] - e, s[1] - e];   // the front one: homodimer adds the copies
+      };
+      // a species placed on a complex is its member (an included species, cd_make), the complex packed round it in the same
+      // undo step; a phenotype or a degraded species not (CellDesigner keeps neither in a complex)
+      var cx = !cdComp(cls) && !/^(PHENOTYPE|DEGRADED)$/.test(cls) ? cdComplexAt(P) : null, made = null;
+      var ok = cdApply(function (t, sh) {
+        var b = boxAt(sh), r = cdComp(cls) ? cdMk.compartment(t, { name: '', box: b, oval: cls === 'OVAL', colour: cdColour(t, cls) }) : cdMk.species(t, { cls: cls, name: '', box: b, complex: cx, colour: cdColour(t, cls) });
+        made = r.alias; return cdComp(cls) ? r.text : cdKeptLook(r.text, r.alias, cls);
+      }, function () { return [made]; });
+      if (ok && cx) joinPack([cx]);
+    }
+
+    // a gate by three clicks: its inputs (two for AND and OR, one for NOT and the unknown gate), then
+    // the reaction's square, or the target entity in reduced notation; the inputs marked as they are clicked
+    var cdGate = null;   // { kind, inputs: [node ids] }
+    function cdGateClick(P) {
+      var kind = CD_GATE[tool.kind], i = linkEnd(P, -1), r = i >= 0 ? cdRole(i) : null;
+      if (!cdGate || cdGate.kind !== kind) cdGate = { kind: kind, inputs: [] };
+      var need = cdMk.NEED[kind];
+      if (cdGate.inputs.length < need) {
+        if (r !== 'epn' || cdGate.inputs.indexOf(nodes2[i].id) >= 0) return;   // a click the gate cannot take does nothing: the marks show what it can (cdGateOk)
+        cdGate.inputs.push(nodes2[i].id);
+        paint();
+        return;
+      }
+      if (r !== 'proc' && (r !== 'epn' || cdStrict())) return;   // the same: a species only in reduced notation
+      var g = cdGate, target = r === 'proc' ? cdRid(i) : nodes2[i].id, out = null, L = cdGateLand(i, P) || {};   // where its line out lands, as shown
+      // refused (nothing said), the inputs clicked stay for another target
+      if (!cdApply(function (t) { var q = cdMk.gate(t, { kind: g.kind, inputs: g.inputs, target: target, spot: L.spot, toAt: L.at }); out = q.gate; return q.text; },
+        function () { return [/\|m\d+$/.test(out) ? out.replace(/\|m(\d+)$/, '|g$1') : out + '|g']; })) return;   // the gate selected: Delete takes it back
+      cdGate = null;
+      if (tool && !tool.sticky) palTake(null);
+    }
+    // Marks while a CellDesigner line is made, as CellDesigner shows them: what is picked (a gate's inputs clicked so far)
+    // as selected, its outline and handles in magenta with a magenta dot at the port its line takes (the centre); the node
+    // the next click or the line's end would land on with a dashed box, grey handles and a blue square at the port it
+    // would take. In the map's units, so they follow the zoom as the other marks
+    var cdHover = null;   // { id, P }: the node a gate's next click would take, under the pointer at P
+    function cdHandles(i, cls) { return handleMarks(bx(i), cls); }
+    function cdDot(Q, cls) { var d = Math.max(3, 4 * V.z); return '<rect class="' + cls + '" x="' + f1(sx(Q[0]) - d / 2) + '" y="' + f1(sy(Q[1]) - d / 2) + '" width="' + f1(d) + '" height="' + f1(d) + '"/>'; }
+    function cdCentre(i) { var b = bx(i); return [b[0] + b[2] / 2, b[1] + b[3] / 2]; }
+    function cdPicked(out, i) {   // a node picked: magenta outline, handles and the centre's dot
+      out.push('<g transform="translate(' + f1(V.tx - x0 * V.z) + ',' + f1(V.ty - y0 * V.z) + ') scale(' + V.z + ')"><path class="m2-ed-pick" stroke-width="' + f1(1 / Math.max(V.z, 0.01)) + '" d="' + shapeD(i) + '"/></g>');
+      out.push(cdHandles(i, 'm2-ed-pickh') + cdDot(cdCentre(i), 'm2-ed-pickh'));
+    }
+    function cdLand(out, i, L) {   // the node a line would land on: dashed box, grey handles, its places (landMarks, core.js), the one it would take filled
+      var b = bx(i), off = 3.3 * V.z;
+      out.push('<rect class="m2-ed-landbox" x="' + f1(sx(b[0]) - off) + '" y="' + f1(sy(b[1]) - off) + '" width="' + f1(b[2] * V.z + 2 * off) + '" height="' + f1(b[3] * V.z + 2 * off) + '"/>');
+      out.push(cdHandles(i, 'm2-ed-landh') + landMarks((L && L.all) || [], (L && L.Q) || cdCentre(i)));
+    }
+    function cdGateOk(i) {   // whether a gate's next click would take node i
+      if (i < 0) return false;
+      var r = cdRole(i), need = cdMk.NEED[CD_GATE[tool.kind]], got = cdGate && cdGate.kind === CD_GATE[tool.kind] ? cdGate.inputs : [];
+      if (got.length < need) return r === 'epn' && got.indexOf(nodes2[i].id) < 0;
+      return r === 'proc' || (r === 'epn' && !cdStrict());
+    }
+    function cdGateLand(i, P) {   // where the gate's line out lands on its target i: a reaction's square or a species' place
+      var r = cdRole(i);
+      return r === 'proc' ? cdPort(i, P, { mod: true }) : r === 'epn' ? cdPort(i, P, { red: true }) : null;
+    }
+    V.view.addEventListener('pointermove', function (e) {
+      var on_ = cdPal() && tool && CD_GATE[tool.kind] && !e.buttons, P = on_ ? at(e) : null, i = on_ ? linkEnd(P, -1) : -1;
+      if (on_ && !cdGateOk(i)) i = -1;
+      var h = i >= 0 ? { id: nodes2[i].id, P: P } : null, was = cdHover;   // by id: a re-parse (an undo, the gate made) renumbers nodes2
+      cdHover = h;
+      var q = function (x) { if (!x) return ''; var k = nodes2.findIndex(function (n) { return n.id === x.id; }), L = k >= 0 && cdGateLand0(k, x.P); return x.id + (L ? (L.at || '') + (L.spot || '') : ''); };
+      if (q(was) !== q(h)) paint();   // only when the node or its blue place changes
+    });
+    function cdGateLand0(k, P) { var need = cdMk.NEED[CD_GATE[tool.kind]], got = cdGate && cdGate.kind === CD_GATE[tool.kind] ? cdGate.inputs.length : 0; return got >= need ? cdGateLand(k, P) : null; }
+    V.view.addEventListener('pointerleave', function () { if (cdHover) { cdHover = null; paint(); } });
+    function cdGateMarks(out) {   // a gate being made by clicks (paint, core.js through linkPaint): its inputs picked, the next click's node
+      if (!tool || !CD_GATE[tool.kind] || !cdPal()) { cdGate = null; cdHover = null; return; }
+      if (cdGate && CD_GATE[tool.kind] !== cdGate.kind) cdGate = null;
+      if (cdGate) cdGate.inputs.forEach(function (id) { var i = nodes2.findIndex(function (n) { return n.id === id; }); if (i >= 0) cdPicked(out, i); });
+      var k = cdHover ? nodes2.findIndex(function (n) { return n.id === cdHover.id; }) : -1;
+      if (k >= 0 && cdGateOk(k)) cdLand(out, k, cdGateLand0(k, cdHover.P));
+    }
+    function cdLinkMarks(out, E) {   // a line drawn by a drag on a CellDesigner map: its start picked, the node it would land on (E: the live line's ends)
+      var add = cdAdd(), no = link.how && link.how.no;
+      var rx = !add || no ? -1 : cdRole(link.from) === 'proc' ? link.from : link.to >= 0 && cdRole(link.to) === 'proc' ? link.to : -1;
+      if (rx >= 0) cdMainLine(out, rx);   // a reactant or product being added: the reaction it joins, its main line in blue
+      if (add === 'p') {   // from a reaction: the product's join in magenta (the reaction itself not picked), an arrowhead at the line's end
+        var J = cdJoin(link.from, false);
+        out.push(cdDot(J || cdCentre(link.from), 'm2-ed-pickh'));
+        if (E && !no) out.push(cdHead(E[0], E[1]));
+      } else cdPicked(out, link.from);
+      if (link.to >= 0 && link.how && !no) cdLand(out, link.to, link.how.land);
+    }
+    function cdHead(S, T) {   // a product's arrowhead at T, as cdrender's (15 long, 10 wide)
+      var L = Math.hypot(T[0] - S[0], T[1] - S[1]);
+      if (L < 1e-6) return '';
+      var u = [(T[0] - S[0]) / L, (T[1] - S[1]) / L], n = [-u[1], u[0]], at = function (a, c) { return f1(sx(T[0] - a * u[0] + c * n[0])) + ' ' + f1(sy(T[1] - a * u[1] + c * n[1])); };
+      return '<path class="m2-ed-head" d="M' + at(0, 0) + 'L' + at(15, 5) + 'L' + at(15, -5) + 'Z"/>';
+    }
+    // Add product picked: the join a press would start from, shown while the pointer is over a reaction's square or near
+    // its main line (cdLineAt), so the drag starts there without aiming at the square
+    var cdOver = null;   // the square's id (a re-parse, an undo, renumbers nodes2)
+    V.view.addEventListener('pointermove', function (e) {
+      var on_ = cdPal() && cdAdd() === 'p' && !e.buttons && !link, i = on_ ? linkEnd(at(e), -1) : -1, id = i >= 0 && cdRole(i) === 'proc' ? nodes2[i].id : null;
+      if (id !== cdOver) { cdOver = id; paint(); }
+    });
+    V.view.addEventListener('pointerleave', function () { if (cdOver) { cdOver = null; paint(); } });
+    function cdOverMarks(out) {
+      var i = cdOver && cdPal() && !link && cdAdd() === 'p' ? nodes2.findIndex(function (n) { return n.id === cdOver; }) : -1;
+      if (i < 0) { cdOver = null; return; }
+      cdMainLine(out, i);
+      var J = cdJoin(i, false);
+      if (J) out.push(cdDot(J, 'm2-ed-pickh'));
+    }
+    // Add reactant and Add product (CellDesigner's Add Reactant and Add Product): a line joined to a reaction already
+    // there. The reaction is taken by its square or its main line: an added reactant joins at 3/8 of the square's
+    // segment, an added product leaves at 5/8 (cdrender linksAndModifiers, cd_edit)
+    function cdAdd() { var k = tool && cdKind(tool.kind); return k === 'ADD_REACTANT' ? 'r' : k === 'ADD_PRODUCT' ? 'p' : null; }
+    function cdStartOk(i) {   // whether a line may start from node i with the sign picked (linkDown, create.js)
+      var r = cdRole(i), add = cdAdd();
+      return r !== 'gate' && (add === 'r' ? r === 'epn' : add === 'p' ? r === 'proc' : true);
+    }
+    function cdMain(i) {   // the main line of the reaction whose square is node i: the edges into and out of its square
+      return edges2.map(function (e, k) { return (e.t === i && /\|a$/.test(e.id)) || (e.s === i && /\|b$/.test(e.id)) ? k : -1; }).filter(function (k) { return k >= 0; });
+    }
+    function cdJoin(i, into) {   // where an added reactant (into) or product meets the main line, in the map's units; null when unknown
+      var ka = edges2.findIndex(function (e) { return e.t === i && /\|a$/.test(e.id); });
+      if (ka < 0) return null;
+      var p = ports(ka), A = p[p.length - 2], C = p[p.length - 1];
+      if (p.length === 2 && edges2[ka].s != null) A = cutShape(edges2[ka].s, A, C, bx(edges2[ka].s));   // no bend: the segment starts at the reactant's outline
+      var t = into ? 0.75 : 1.25;   // 3/8 and 5/8 of the segment, the square at its middle
+      return [A[0] + t * (C[0] - A[0]), A[1] + t * (C[1] - A[1])];
+    }
+    function cdMainLine(out, i) {
+      cdMain(i).forEach(function (k) {
+        var p = line(k);
+        if (p) out.push('<path class="m2-ed-rxline" stroke-width="' + f1(Math.max(1.5, 1.5 * V.z)) + '" d="M' + p.map(function (q) { return f1(sx(q[0])) + ' ' + f1(sy(q[1])); }).join('L') + '"/>');
+      });
+    }
+    // with Add reactant or Add product picked, a press or a release near a reaction's main line takes its square (linkEnd,
+    // create.js, when no node is under P): within 5 pixels of the line, as a click takes a line (hit, core.js)
+    function cdLineAt(P, not) {
+      if (!cdAdd()) return -1;
+      var R = 5 / V.z, best = -1, bd = Infinity;
+      edges2.forEach(function (e, k) {
+        var i = /\|a$/.test(e.id) ? e.t : /\|b$/.test(e.id) ? e.s : null;
+        if (i == null || i === not || cdRole(i) !== 'proc') return;
+        var p = line(k);
+        for (var j = 1; p && j < p.length; j++) { var d = near(P, p[j - 1], p[j]); if (d <= R && d < bd) { bd = d; best = i; } }
+      });
+      return best;
+    }
+    // the line being drawn (linkPaint, create.js; C: its start node's centre): an added reactant from where the line to
+    // its join leaves the species, to the join; an added product from its join to the place it would take on the species
+    function cdLiveEnds(S, P, C) {
+      var h = link.how, ok = h && !h.no, J;
+      if (ok && h.part === 'reactant' && h.land && h.land.Q) { J = h.land.Q; return [cutShape(link.from, C, J, bx(link.from)), J]; }
+      if ((ok ? h.part === 'product' : !h && cdAdd() === 'p') && (J = cdJoin(link.from, false))) return [J, ok && h.land && h.land.Q ? cutShape(link.to, h.land.Q, J, bx(link.to)) : P];   // over nothing yet: from the join to the pointer
+      return [S, P];
+    }
+    // the map clicked with a CellDesigner sign in hand (palUp, create.js)
+    function cdClick(P) { if (CD_GATE[tool.kind]) cdGateClick(P); else cdMake(P, tool.kind); }
+
+    // a line drawn by a drag from a node with a line's sign picked (create.js linkDown, linkHow, linkMake). A reaction
+    // sign: species to species that reaction. Add reactant: a species onto a reaction an added reactant, onto a gate a new
+    // input. Add product: a reaction to a species an added product. A
+    // modifier picked: a species onto a square, or species to species its reduced notation type (the tick box ticked)
+    // what a line from a to b makes (cdHow0), with where its end would land when let go at P (land: { Q, at, spot },
+    // shown by cdLand and written by cdLink)
+    function cdHow(a, b, P) { var h = cdHow0(a, b); if (h && !h.no && P) h.land = cdPort(b, P, h); return h; }
+    // where an end let go at P lands on node i. A species, for a reaction's or reduced line's product end or an added
+    // product: one of CellDesigner's 16 places (cdrender anchorAt, its one master), the nearest to P, or the centre while
+    // P is in the middle half of the box. A reaction's square, for a modifier: the nearest of its six places, turned with
+    // the main line (cdrender SQUARE's order, 2 to 7). Anything else: the centre
+    var cdClsMemo = [null, {}];
+    function cdClsOf(id) {
+      if (cdClsMemo[0] !== cd.now) cdClsMemo = [cd.now, {}];
+      if (!(id in cdClsMemo[1])) { try { var A = cdMk.aliasInfo(cd.now, id); cdClsMemo[1][id] = A.cls && [A.cls, A.homodimer || 1]; } catch (e) { cdClsMemo[1][id] = null; } }
+      return cdClsMemo[1][id];
+    }
+    function cdPort(i, P, how) {   // all: every place offered, for the marks (cdLand)
+      var b = bx(i), C = [b[0] + b[2] / 2, b[1] + b[3] / 2], best = null, bd = Infinity, all = [];
+      var near = function (Q, o) { all.push(Q); var d = Math.hypot(Q[0] - P[0], Q[1] - P[1]); if (d < bd) { bd = d; best = o; o.Q = Q; } };
+      if (how.mod && cdRole(i) === 'proc') {   // procPlaces (core.js): the six places in cdrender SQUARE's order, 2 to 7
+        var S = procPlaces(i);
+        if (!S) return { Q: C };
+        S.forEach(function (o, k) { near([C[0] + o[0], C[1] + o[1]], { spot: k + 2 }); });
+        best.all = all;
+        return best;
+      }
+      if (how.part === 'reactant' && cdRole(i) === 'proc') { var J = cdJoin(i, true); return J ? { Q: J, all: [J] } : { Q: C }; }   // an added reactant: its join on the main line
+      var N = how.rx || how.red || how.part === 'product' ? nodePlaces(i) : null;   // a species' 16 places (celldesigner.js)
+      if (!N) return { Q: C };
+      N.forEach(function (o) { near([C[0] + o[0], C[1] + o[1]], { at: o[2] }); });
+      all.push(C);
+      if (nodeCentre(i, P)) return { Q: C, all: all };
+      best.all = all;
+      return best;
+    }
+    function cdHow0(a, b) {
+      if (b < 0) return null;
+      var ra = cdRole(a), rb = cdRole(b), want = tool && ARCS[tool.kind] ? cdKind(tool.kind) : null;
+      var isRx = want && CD_RX.some(function (q) { return q[0] === want; }), isMod = want && cdMk.MODS.indexOf(want) >= 0;
+      var add = want === 'ADD_REACTANT' ? 'r' : want === 'ADD_PRODUCT' ? 'p' : null;
+      if (!rb) return { no: 'A line joins species, a reaction’s square or a logic gate: never a compartment or a complex’s member.' };
+      if (ra === 'gate') return { no: 'A logic gate has one line out, made with the gate.' };
+      if (rb === 'gate') {
+        if (ra !== 'epn') return { no: 'A logic gate’s inputs are species.' };
+        return add === 'r' ? { gate: true } : { no: 'A new input of a logic gate is drawn with Add reactant.' };
+      }
+      if (ra === 'proc' && rb === 'proc') return { no: 'A line does not join two reactions.' };
+      if (add === 'r') return ra === 'epn' && rb === 'proc' ? { part: 'reactant' } : { no: 'Add reactant goes from a species onto a reaction (its square or its main line) or onto a logic gate.' };
+      if (add === 'p') return ra === 'proc' && rb === 'epn' ? { part: 'product' } : { no: 'Add product goes from a reaction (its square or its main line) to a species.' };
+      if (ra === 'proc') return isMod ? { no: 'A ' + CD_NAME[want].toLowerCase() + ' goes from a species.' } : { no: 'A product added to a reaction is drawn with Add product.' };
+      if (rb === 'proc') {
+        return isRx ? { no: 'A reactant added to a reaction is drawn with Add reactant; a reaction’s sign makes a new reaction between two species.' } : { mod: want || 'CATALYSIS' };
+      }
+      if (isMod) {   // between species: its reduced notation type, with the tick box ticked
+        if (!RED_OF[want]) return { no: 'CellDesigner has no catalysis between species: it ends on a reaction’s square (between species, physical stimulation).' };
+        return cdStrict() ? { no: 'A ' + CD_NAME[want].toLowerCase() + ' between species is reduced notation, unticked in the palette; it ends on a reaction’s square.' } : { red: RED_OF[want] };
+      }
+      return { rx: want || 'STATE_TRANSITION' };
+    }
+    function cdLink(a, b, how) {
+      var ia = nodes2[a].id, ib = nodes2[b].id, line = null;
+      cdApply(function (t) {
+        var q;
+        var L = how.land || {};   // where its end lands (cdPort)
+        if (how.rx) { q = cdMk.reaction(t, { type: how.rx, from: ia, to: ib, toAt: L.at }); line = q.reaction; }
+        else if (how.red) { q = cdMk.reduced(t, { type: how.red, from: ia, to: ib, toAt: L.at }); line = q.reaction; }
+        else if (how.gate) q = cdMk.gateInput(t, cdGateRef(b), ia);
+        else if (how.mod) { q = cdMk.modifier(t, cdRid(b), ia, how.mod, L.spot); line = cdRid(b) + '|' + q.part; }
+        else { q = how.part === 'reactant' ? cdMk.reactant(t, cdRid(b), ia) : cdMk.product(t, cdRid(a), ib, L.at); line = cdRid(how.part === 'reactant' ? b : a) + '|' + q.part; }
+        return q.text;
+      }, [], function () { return line ? [line] : []; });   // the new line selected: Delete takes it back
+    }
+
+    // Delete (the key, or the right-click menu): species and compartments selected with all that hangs on them
+    // (cd_make.remove: a compartment only empty), reactions by their square or main line, a modifier, added reactant or
+    // product, a gate with its lines, a gate's input
+    // Each thing is named by what it is, not by its number (removing a gate or its last input renumbers a reaction's
+    // modifications): read again before each removal, and one gone with an earlier one skipped
+    function cdDelete(nodes, lines) {
+      var al = [], jobs = [], ab = function (t, rid) { try { return cdMk.about(t, rid); } catch (e) { return null; } };
+      var seen = {}, job = function (j) { var k = JSON.stringify(j); if (!seen[k]) { seen[k] = 1; jobs.push(j); } };
+      var t0 = cd.now;
+      nodes.forEach(function (i) {
+        var r = cdRole(i), rid = r ? cdRid(i) : null;
+        if (r === 'proc') job({ rid: rid });
+        else if (r === 'gate') {
+          var m = nodes2[i].id.match(/\|g(\d+)$/), A = ab(t0, rid);
+          if (!m) job({ rid: rid });   // a gate between species is its reaction
+          else if (A) job({ rid: rid, mod: A.mods[+m[1]], al: A.modAliases[+m[1]] });
+        } else al.push(nodes2[i].id);   // a member or a compartment too: cd_make says what it refuses
+      });
+      lines.forEach(function (k) {
+        var e = edges2[k], m = e.id.match(/^(.*)\|(a|b|[rpmi])(\d*)$/);
+        if (!m) return;
+        var rid = m[1], A = ab(t0, rid);
+        if (m[2] === 'a' || m[2] === 'b') job({ rid: rid });
+        else if (m[2] === 'i') job({ rid: rid, input: nodes2[e.s].id });
+        else if (m[2] === 'm' && A) job({ rid: rid, mod: A.mods[+m[3]], al: A.modAliases[+m[3]] });
+        else if (A) job({ rid: rid, link: m[2], al: (m[2] === 'r' ? A.rl : A.pl)[+m[3]] });
+      });
+      if (!al.length && !jobs.length) return false;
+      cdApply(function (t) {
+        jobs.forEach(function (j) {
+          var A = ab(t, j.rid);
+          if (!A) return;   // gone with something removed before
+          if (j.input) { if (A.inputs && A.inputs.indexOf(j.input) >= 0) t = cdMk.gateInputRemove(t, j.rid, j.input); return; }
+          if (j.mod) { var n = A.mods.findIndex(function (x, q) { return x === j.mod && A.modAliases[q] === j.al; }); if (n >= 0) t = cdMk.removeLine(t, j.rid, 'm' + n); return; }
+          if (j.link) { var l = (j.link === 'r' ? A.rl : A.pl).indexOf(j.al); if (l >= 0) t = cdMk.removeLine(t, j.rid, j.link + l); return; }
+          t = cdMk.removeLine(t, j.rid);
+        });
+        if (al.length) t = cdMk.remove(t, al);
+        return t;
+      });
+      return true;
+    }
+    document.addEventListener('keydown', function (e) {
+      if ((e.key !== 'Delete' && e.key !== 'Backspace') || !cdPal() || /input|textarea|select/i.test(document.activeElement.tagName)) return;
+      if ((selN.length || selE.length) && !selP.length && cdDelete(selN, selE)) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
+    function cdDeleteItem() {   // the right-click menu's Delete over a node or a line
+      if (!rclick) return null;
+      var h = hit(rclick);
+      if (h && h.n != null) { var i = h.n; return function () { cdDelete(selN.indexOf(i) >= 0 ? selN : [i], selN.indexOf(i) >= 0 ? selE : []); }; }
+      if (h && h.e != null && h.p == null) { var k = h.e; return function () { var all = selE.indexOf(k) >= 0; cdDelete(all ? selN : [], all ? selE : [k]); }; }   // over the selection: all of it
+      return null;
+    }
+    // the right-click menu over a species, a line or a gate: its other kinds within the palette's
+    function cdItems() {
+      if (!rclick) return null;
+      var h = hit(rclick), out = [];
+      if (h && h.n != null) {
+        var i = h.n, r = cdRole(i), id = nodes2[i].id;
+        if (r === 'gate') {
+          var g = cdMk.about(cd.now, cdRid(i)), m = id.match(/\|g(\d+)$/), now = m ? g.gates[+m[1]] : g.gate;
+          if (!now) return null;
+          var nin = m ? now.inputs.length : (g.inputs || []).length;
+          CD_GATES.forEach(function (q) {
+            if (q[0] !== now.kind && !(q[0] === 'NOT' && nin > 1) && nin >= cdMk.NEED[q[0]]) out.push(['Make ' + q[1], function () { cdApply(function (t) { return cdMk.gateType(t, cdGateRef(i), { kind: q[0] }); }, [id]); }]);
+          });
+          return out;
+        }
+        if (r === 'proc') return cdRxItems(cdRid(i));
+        var A = cdMk.aliasInfo(cd.now, id);
+        if (!A.cls || A.cls === 'COMPLEX') return null;
+        out.push(['Change identity', subItem(function (r, done) { return cdIdentity(id, r, done); })]);
+        // after it, the species' homodimer, as Properties' Multimer (2 when made, 1 back)
+        if (A.cls !== 'DEGRADED') out.push([A.homodimer > 1 ? 'Make monomer' : 'Make multimer', function () { cdApply(function (t) { return cdMk.homodimer(t, id, A.homodimer > 1 ? 1 : 2); }, [id]); }]);
+        out.late = true;   // rarely used: after the common items, above Delete
+        return out;
+      }
+      if (h && h.e != null && h.p == null) {
+        var ln = edges2[h.e], mm = ln.id.match(/^(.*)\|(a|b|m\d+)$/);
+        if (!mm || (ln.t != null && cdRole(ln.t) === 'gate')) return null;   // a gate's input: nothing to change on it
+        if (ln.s != null && cdRole(ln.s) === 'gate') {   // a gate's line out: its other output types (a modifier's on a reaction, reduced notation's between species)
+          var gs = ln.s, gref = cdGateRef(gs), ga = cdMk.about(cd.now, cdRid(gs)), gm = nodes2[gs].id.match(/\|g(\d+)$/), gw = gm ? ga.gates[+gm[1]] : ga.gate;
+          if (!gw) return null;
+          return cdModIdentity(gm ? CD_MODS : CD_RED, gw.out, function (k) { cdApply(function (t) { return cdMk.gateType(t, gref, { output: k }); }, [nodes2[gs].id]); });
+        }
+        if (mm[2][0] !== 'm') return cdRxItems(mm[1]);
+        var n = +mm[2].slice(1), ab = cdMk.about(cd.now, mm[1]), was = ab.mods[n];
+        if (cdMk.MODS.indexOf(was) < 0) return null;   // a gate's own line: its gate's menu
+        return cdModIdentity(CD_MODS, was, function (k) { cdApply(function (t) { return cdMk.modifierType(t, mm[1], n, k); }, [], [mm[1] + '|m' + n]); });
+      }
+      return null;
+    }
+    // Change identity (core.js kindWindow): a species' kinds, the palette's names, no complex or compartment (a
+    // complex and a single species are not changed into one another), none a complex cannot hold for its member (phenotype,
+    // degraded); a click retypes it (cd_make.retype, its colour following the scheme), one undo step
+    function cdIdentity(id, r, done) {
+      var A = cdMk.aliasInfo(cd.now, id);
+      if (!A.cls) return null;
+      return kindWindow(r, CD_SP.filter(function (q) { return q[0] !== 'COMPLEX' && !cdComp(q[0]) && !(A.complex && /^(PHENOTYPE|DEGRADED)$/.test(q[0])); }).map(function (q) {
+        return { name: q[1], own: q[0] === A.cls, go: function () { cdApply(function (t) { return cdMk.retype(t, id, q[0], { from: cdColour(t, A.cls), to: cdColour(t, q[0]) }); }, [id]); } };
+      }), done);
+    }
+    // a modulation's kinds (a modifier on a reaction: the five; reduced notation between species: its four, no catalysis),
+    // each by the modifier's sign and name; set: [[type, modifier type]], go(type) writes it
+    function cdModIdentity(set, was, go) {
+      return lateItem(['Change identity', subItem(function (r, done) {
+        return kindWindow(r, set.map(function (q) { return { name: CD_NAME[q[1]], own: q[0] === was, go: function () { go(q[0]); } }; }), done);
+      })]);
+    }
+    var CD_MODS = CD_MOD.map(function (q) { return [q[0], q[0]]; });   // a modifier's types, each its own sign
+    function cdRxItems(rid) {   // a reaction's other types: a process's among the three; reduced notation (a modulation) by Change identity
+      var ab = cdMk.about(cd.now, rid), set = cdMk.PROCESS.indexOf(ab.type) >= 0 ? CD_RX : null;
+      if (cdMk.REDUCED.indexOf(ab.type) >= 0) return cdModIdentity(CD_RED, ab.type, function (k) { cdApply(function (t) { return cdMk.reactionType(t, rid, k); }, [], [rid]); });
+      if (ab.reversible === null) return null;
+      // its other types by Change identity (core.js kindWindow), as a species' and a modifier's; then reversible or not
+      var out = set ? [['Change identity', subItem(function (r, done) {
+        return kindWindow(r, set.map(function (q) { return { name: q[1], own: q[0] === ab.type, go: function () { cdApply(function (t) { return cdMk.reactionType(t, rid, q[0]); }, [], [rid]); } }; }), done);
+      })]] : [];
+      out.push([ab.reversible ? 'Make irreversible' : 'Make reversible', function () { cdReversible(rid, !ab.reversible); }]);
+      out.late = true;   // rarely used: after the common items, above Delete
+      return out;
+    }
+    // reversible or not (cd_make.reversible; about() null where a reaction may not be): also the Reversible tick box in
+    // Properties, for one reaction selected (its lines or its square, nothing else); true when written
+    function cdReversible(rid, on) { return cdApply(function (t) { return cdMk.reversible(t, rid, on); }, [], [rid]); }
+    var cdRxSeen = [null, null];   // [rid and file, reversible or null]: read once per selection and change (Properties runs with every paint)
+    function cdRxOf() {   // { rid, on } of the one reaction selected that may be reversible, else null
+      if (!cd || selP.length || svSel || (!selE.length && !selN.length)) return null;
+      if (selE.length === 1 && !selN.length && edges2[selE[0]] && /\|[rp]\d+$/.test(edges2[selE[0]].id)) return null;   // an added reactant or product alone: its own line's Properties
+      var rid = null, ok = true;
+      selE.forEach(function (k) { var m = edges2[k] && edges2[k].id.match(/^(.*)\|(a|b|r\d+|p\d+)$/); if (!m || (rid && rid !== m[1])) ok = false; else rid = m[1]; });
+      selN.forEach(function (i) { var m = nodes2[i] && nodes2[i].id.match(/^(.*)\|proc$/); if (!m || (rid && rid !== m[1])) ok = false; else rid = m[1]; });
+      if (!ok || !rid) return null;
+      var key = rid + '\u0000' + cd.now;
+      if (cdRxSeen[0] !== key) { var ab = null; try { ab = cdMk.about(cd.now, rid); } catch (e) { ab = null; } cdRxSeen = [key, ab ? ab.reversible : null]; }
+      return cdRxSeen[1] === null ? null : { rid: rid, on: cdRxSeen[1] };
+    }
+    // a name typed in place (a double click on a species, a complex's member included, on a complex's or a compartment's
+    // drawn name, or a complex's bottom band or a compartment's top one; typeIn in create.js), written by cd_make.rename;
+    // a degraded species has none
+    V.view.addEventListener('dblclick', function (e) {
+      if (!cdPal() || !editing(e)) return;
+      if (tool || Date.now() - placedAt < 600) { e.stopImmediatePropagation(); return; }
+      var named = function (n, k) { return cdRole(k) === 'epn' || n.comp || (n.up != null && nodes2[n.up].shape.kind === 'Complex'); };
+      var P = at(e), i = innermost(P, function (n, k) { return named(n, k) && n.el.getAttribute('yfiles.foldertype') !== 'group'; });
+      if (i < 0) i = nameHit(P, named);
+      if (i < 0) i = innermost(P, function (n, k) { return named(n, k) && (!n.comp && P[1] - boxOf(k)[1] >= boxOf(k)[3] - 24 || n.comp && P[1] - boxOf(k)[1] <= 24) && !nameBox(k); });   // the bands only for a group with no name drawn
+      if (i < 0) return;
+      var A = cdMk.aliasInfo(cd.now, nodes2[i].id);
+      if (A.cls === 'DEGRADED') return;
+      e.stopImmediatePropagation(); typeIn(nodes2[i].id, null);
+    }, true);
+    // the name as typed: CellDesigner's file keeps it escaped, a line break as _br_ and Greek letters spelled (cd_make.cdName);
+    // a species not named yet carries its id (CellDesigner's way), shown as no name
+    function cdNameOf(id, shown) {   // shown: the name as drawn (Properties), else '' for one still named after its id (typed in place)
+      var A = cdMk.aliasInfo(cd.now, id), s = A.name || '';
+      if (s === A.id && !shown) return '';
+      s = s.replace(/&#x([0-9a-f]+);/gi, function (m, h) { return String.fromCodePoint(parseInt(h, 16)); }).replace(/&#(\d+);/g, function (m, d) { return String.fromCodePoint(+d); })
+        .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+      return window.cdrender.plainName(s).replace(/_br_/g, ' ');
+    }
+    function cdRename(id, v) { cdApply(function (t) { return cdMk.rename(t, id, v); }, [id]); }
+
+    // resizing and Properties on a CellDesigner map (propFmt, create.js): a species resized by its handles or by Width and
+    // Height, as on SBGN-ML maps (a complex's member by its handles only, a complex with members as a holder: roomy, core.js); the label, the fill, the
+    // border width and multimer (the species' homodimer, 2 when ticked) written by cd_make. No border colour (CellDesigner's
+    // species have none); a degraded species keeps its look and its id as its name. A complex (not a member) and a
+    // compartment have Properties too: Width, Height and Fill (a compartment's colour, its band and lines drawn from it), a
+    // complex its border width; Set as default (cdDef) for species only
+    function cdSpecies(i) { return cdRole(i) === 'epn' && nodes2[i].el.getAttribute('yfiles.foldertype') !== 'group'; }
+    function cdSetSize(pairs) {   // each node given its box, one undo step with the compartments round them grown to hold them (written back by cd_edit)
+      var ids = [], was = {}, one = {};
+      pairs.forEach(function (q) { var b = boxOf(q[0]); if (q[1].some(function (v, j) { return Math.abs(v - b[j]) >= 0.005; })) { ids.push(nodes2[q[0]].id); was[nodes2[q[0]].id] = b; one[q[0]] = q[1]; } });
+      if (!ids.length) { liveOff(); sizeOff(); paint(); return; }
+      remember(false); setBoxes(one);
+      var ks = nodes2.map(function (n, k) { return ids.indexOf(n.id) >= 0 ? k : -1; }).filter(function (k) { return k >= 0; });
+      setBoxes(grown(ks, boxOf, function (k) { return was[nodes2[k].id] || boxOf(k); }, function () { return false; }));
+      selN = []; nodes2.forEach(function (n, k) { if (ids.indexOf(n.id) >= 0) selN.push(k); });
+      sizeRec = null; render(); paint(); changed();
+    }
+    var cdLook = [], cdLineMemo = [null, null, null];   // [alias id, file, its look]; [line id, file, its colour]
+    function cdLineColour(k) {   // read once per line and file (it runs with every paint)
+      var id = edges2[k].id;
+      if (cdLineMemo[0] !== id || cdLineMemo[1] !== cd.now) { var c = null; try { c = cdMk.lineColour(cd.now, id); } catch (e) { c = null; } cdLineMemo = [id, cd.now, c]; }
+      return cdLineMemo[2];
+    }
+    function cdSizable(i) {   // a species, a complex's member too (the complex grows round it), a complex, a compartment
+      var n = nodes2[i], u = n.up != null ? nodes2[n.up] : null;
+      return cdProp(i) || (!!u && u.shape.kind === 'Complex' && n.el.getAttribute('yfiles.foldertype') !== 'group');
+    }
+    function cdProp(i) { return cdSpecies(i) || nodes2[i].comp || (cdRole(i) === 'epn' && nodes2[i].shape.kind === 'Complex'); }   // what Properties is for: a species, a complex (not a member), a compartment
+    var PF_CD = { sizable: cdSizable, size: cdSetSize, def: cdDef,
+      rx: { of: cdRxOf, set: cdReversible },   // a reaction's Reversible (propRx, create.js)
+      // a line's colour (edgeShow, edgeSet): a modifier's, an added reactant's or product's own, else its reaction's (a
+      // reduced notation's line, a main line); a gate's lines none (cd_make.lineColour null), no ports as offsets
+      line: { colour: cdLineColour, set: function (k, c) {   // the line, or its whole reaction, selected again
+        var id = edges2[k].id, keep = /\|[mrp]\d+$/.test(id) ? id : id.replace(/\|[^|]*$/, '');
+        return cdApply(function (t) { return cdMk.recolourLine(t, id, c || '#000000'); }, [], [keep]);
+      }, ports: false },
+      node: function (i) { return cdProp(i) ? i : -1; },
+      off: function (k, i) {   // pNow: look's, read just before; a compartment no border width or multimer, a complex no multimer
+        return k === 'line' || (/^(mem|outer|inner)$/.test(k) && pNow.cls !== 'COMPARTMENT') || (/^(label|fill|multimer)$/.test(k) && pNow.cls === 'DEGRADED') || (/^(width|multimer|def)$/.test(k) && pNow.cls === 'COMPARTMENT') || (/^(multimer|def)$/.test(k) && pNow.cls === 'COMPLEX');
+      },
+      look: function (i) {   // null while the file is behind the map read (an undo not drawn yet); read once per node and file (it runs with every paint)
+        var id = nodes2[i].id;
+        if (cdLook[0] !== id || cdLook[1] !== cd.now) {
+          var L = null;
+          try { L = cdMk.look(cd.now, id); L = { label: cdNameOf(id, true), fill: L.fill, line: '#000000', width: L.width, multimer: L.multimer, cls: L.cls, mem: L.mem, outer: L.outer, inner: L.inner }; } catch (e) { L = null; }
+          cdLook = [id, cd.now, L];
+        }
+        return cdLook[2] && Object.assign({}, cdLook[2]);
+      },
+      set: function (k, v, is) {   // every node of is given the value, one undo step
+        var ids = is.map(function (i) { return nodes2[i].id; }), all = function (f) { return cdApply(function (t) { ids.forEach(function (id) { t = f(t, id); }); return t; }, ids); };
+        if (k === 'label') return all(function (t, id) { return cdMk.rename(t, id, v.replace(/[\r\n]+/g, ' ')); });
+        if (k === 'multimer') return all(function (t, id) { return !v ? cdMk.homodimer(t, id, 1) : cdMk.aliasInfo(t, id).homodimer > 1 ? t : cdMk.homodimer(t, id, 2); });   // a count above 2 kept
+        if (k === 'width') { var x = parseFloat(v); return isFinite(x) && all(function (t, id) { return cdMk.restyle(t, id, { width: Math.min(Math.max(x, 0.25), 20) }); }); }   // outside 0.25 to 20: the nearest, silently
+        if (k === 'fill') { var c = hex(v); return !!c && all(function (t, id) { return cdMk.restyle(t, id, { fill: c }); }); }
+        if (/^(mem|outer|inner)$/.test(k)) return cdDouble(k, parseFloat(v), ids);
+        return false;
+      } };
+    // a compartment's double line in Properties: Membrane (its thickness), Outer line and Inner line (their widths), after
+    // Border width. A number outside the limits is set, without a word, to the nearest allowed (as a graph editor's
+    // fields): CellDesigner's (thickness 2 at least, inner line 1 at least, outer line at least the inner + 1, else it
+    // refuses the file's values), the viewer's above (an outer line 20), and a thickness leaving room inside the box (half its
+    // smaller side less 3). All three written each time, so a file already outside them comes back inside
+    propRows([['mem', 'Membrane', 'num', ' min="2" max="100"', 'Membrane thickness: the band between the two lines, 2 at least'],
+      ['outer', 'Outer line', 'num', ' min="2" max="20"', 'Outer line width, at least the inner line + 1'],
+      ['inner', 'Inner line', 'num', ' min="1" max="19"', 'Inner line width, 1 at least']]);
+    function cdDouble(k, x, ids) {
+      if (!isFinite(x)) return false;
+      var clamp = function (v, a, b) { return Math.min(Math.max(v, a), b); };
+      return cdApply(function (t) {
+        ids.forEach(function (id) {
+          var L = cdMk.look(t, id), b = cdMk.aliasInfo(t, id).box, o = { mem: L.mem, outer: L.outer, inner: L.inner };
+          o[k] = x;
+          o.mem = clamp(o.mem, 2, b ? Math.max(2, Math.min(b[2], b[3]) / 2 - 3) : 100);
+          o.outer = clamp(o.outer, 2, 20); o.inner = clamp(o.inner, 1, o.outer - 1);   // the outer line kept, the inner one fitted under it
+          t = cdMk.restyle(t, id, o);
+        });
+        return t;
+      }, ids);   // nothing written (the values already there): the field shows them again
+    }
+
+    // a sign dragged from the palette: CellDesigner's shape at its size following the pointer (create.js palDrag), drawn
+    // as cdrender draws it once dropped (D.shape, outline: RNA slanted by its height, a protein's corners 5, a complex's
+    // cut 5, a degraded circle 3/8 of the width with its stroke), so nothing changes shape on the drop
+    function cdCompGhost(w, h, oval) {   // a new compartment as cdrender draws it (cd_make's COMP: its lines and band; its colour by Colours)
+      var C = cdMk.COMP;
+      return window.cdrender.compartmentShape(0, 0, w, h, C.thickness, C.outer, C.inner, '#' + (cdColour(cd && cd.now, 'COMPARTMENT') || C.colour).slice(2), oval);
+    }
+    function cdGhost(kind) {
+      var cls = cdKind(kind), s = cdSize(cls), n = cdComp(cls) ? 1 : cdCopies(cls), e = 6 * (n - 1), w = s[0] - e, h = s[1] - e, k = cdCols() === 'custom' && cdKept()[cls],   // a kept multimer: its front one, the copies behind (as dropped)
+        col = cdComp(cls) ? 'none' : '#' + (cdColour(cd && cd.now, cls) || cdMk.LOOK[cls][2]).slice(2), ink = ' fill="' + col + '" stroke="#000" stroke-width="' + (k && k.width > 0 && cls !== 'DEGRADED' ? k.width : 1) + '"';
+      var shape = {
+        PROTEIN: '<rect width="' + w + '" height="' + h + '" rx="5"' + ink + '/>', GENE: '<rect width="' + w + '" height="' + h + '"' + ink + '/>',
+        RNA: '<path d="M' + h + ' 0H' + w + 'L' + (w - h) + ' ' + h + 'H0z"' + ink + '/>', SIMPLE_MOLECULE: '<ellipse cx="' + w / 2 + '" cy="' + h / 2 + '" rx="' + w / 2 + '" ry="' + h / 2 + '"' + ink + '/>',
+        UNKNOWN: '<ellipse cx="' + w / 2 + '" cy="' + h / 2 + '" rx="' + w / 2 + '" ry="' + h / 2 + '" fill="' + col + '"/>',
+        PHENOTYPE: '<path d="M' + h / 2 + ' 0H' + (w - h / 2) + 'L' + w + ' ' + h / 2 + 'L' + (w - h / 2) + ' ' + h + 'H' + h / 2 + 'L0 ' + h / 2 + 'z"' + ink + '/>',
+        DEGRADED: '<circle cx="' + w / 2 + '" cy="' + h / 2 + '" r="' + w * 3 / 8 + '"' + ink + '/><path d="M' + w * 0.7 + ' 0L' + w * 0.3 + ' ' + h + '" stroke="#000"/>',
+        COMPLEX: '<path d="M5 0H' + (w - 5) + 'L' + w + ' 5V' + (h - 5) + 'L' + (w - 5) + ' ' + h + 'H5L0 ' + (h - 5) + 'V5z"' + ink + ' stroke-width="2"/>',
+        COMPARTMENT: cdCompGhost(w, h, false), OVAL: cdCompGhost(w, h, true)
+      }[cls];
+      for (var j = n - 1, back = ''; j > 0; j--) back += '<g transform="translate(' + 6 * j + ' ' + 6 * j + ')">' + shape + '</g>';
+      return { w: s[0], h: s[1], svg: '<svg width="100%" height="100%" viewBox="0 0 ' + s[0] + ' ' + s[1] + '" overflow="visible">' + (back || '') + shape + '</svg>' };
+    }
